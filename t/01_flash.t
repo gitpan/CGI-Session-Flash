@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-use Test::More tests => 42;
+use Test::More tests => 50;
 
 BEGIN { use_ok('CGI::Session::Flash'); }
 
@@ -35,9 +35,9 @@ ok(defined $flash, "created new flash");
 ok($flash->is_empty, "starts out empty");
 
 # Accessors
+is($flash->cleanup_done, 0, "cleanup_done accessor defaults to false");
 is($flash->session, $session, "session accessor");
-is($flash->auto_cleanup, 1, "auto_cleanup accessor");
-is_deeply($flash->session_key, '_flash', "session_key accessor");
+is($flash->session_key, '_flash', "session_key accessor");
 
 # Setting single value
 ok($flash->set(test => "value"), "set simple key");
@@ -53,19 +53,24 @@ is(@$test2, 2, "    has 2 elements");
 is($test2->[0], "value1", "    value1");
 is($test2->[1], "value2", "    value2");
 my @test2 = $flash->get("test2");
-is(@test2, 2, "got array with 2 elements in list context");
+is(@test2, 2, "  got array with 2 elements in list context");
+is($test2[0], "value1", "   value1");
+is($test2[1], "value2", "   value2");
 
 # Check set keys
 is_deeply([ $flash->keys ], [ 'test', 'test2' ], "correct keys");
 
 # Check that resetting empties flash
 ok(!$flash->is_empty, "flash is not empty");
+$flash->{_cleanup_done} = 1;
 ok($flash->reset, "reset");
+is($flash->cleanup_done, 0, "cleanup_done accessor reset to false");
 ok($flash->is_empty, "now it is empty");
 
 # Flush
 ok($flash->flush, "flushing empty");
 ok(scalar keys %$session == 2, "2 session keys wrote");
+is($flash->cleanup_done, 1, "cleanup done flag set");
 
 # Test creation with data.
 $session = My::Session->new(
@@ -75,15 +80,13 @@ $session = My::Session->new(
     },
     FLASHY_keep => [ 'test' ],
 );
-$flash = CGI::Session::Flash->new($session,
-    session_key  => 'FLASHY',
-    auto_cleanup => 0,
-);
+$flash = CGI::Session::Flash->new($session, session_key => 'FLASHY');
 
 ok($flash, "creation with data");
-is($flash->auto_cleanup, 0, "auto_cleanup turned off");
+is($flash->cleanup_done, 0, "cleanup_done false");
 is_deeply($flash->session_key, 'FLASHY', "session_key set");
 is($flash->get("test"), "value", "  got test value");
+is($flash->get("foo"), "bar", "  got foo value");
 
 # Keep
 ok($flash->keep('test'), "keep test key");
@@ -115,10 +118,13 @@ $session = My::Session->new(
 );
 $flash = CGI::Session::Flash->new($session);
 
+is($flash->cleanup_done, 0, "cleanup_done is false");
 ok($flash->cleanup, "more advanced flash cleanup");
+is($flash->cleanup_done, 1, "cleanup_done is true");
 ok(!$flash->is_empty, "  not empty");
 ok(!$flash->has_key('info'), "  no longer has info key");
+ok($flash->cleanup, "flash cleanup again");
 is_deeply([ $flash->keys ], [ 'errors', 'warnings' ], "  still has other keys");
 
-ok($flash->cleanup, "called cleanup again");
+ok($flash->cleanup(1), "forced cleanup");
 ok($flash->is_empty, "  now it is empty");

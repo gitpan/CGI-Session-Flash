@@ -2,7 +2,7 @@ package CGI::Session::Flash;
 use Carp;
 use strict;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 
 # Create a new flash object.
@@ -14,8 +14,7 @@ sub new
     my $class   = shift;
     my $session = shift;
     my %options = (
-        auto_cleanup => 1,
-        session_key  => '_flash',
+        session_key => '_flash',
         @_,
     );
 
@@ -32,7 +31,7 @@ sub new
         _session      => $session,
         _data         => $data,
         _keep         => { map { $_ => 1 } @$keep },
-        _auto_cleanup => $options{auto_cleanup},
+        _cleanup_done => 0,
         _session_key  => $options{session_key},
     };
 
@@ -40,28 +39,19 @@ sub new
     return $self;
 }
 
-# When the object goes out of scope, perform the automatic cleanup (if enabled)
-# and flush it's contents so that they get saved back into the session.
-sub DESTROY
-{
-    my $self = shift;
-
-    # Perform cleanup
-    $self->cleanup() if ($self->auto_cleanup);
-
-    # Flush
-    $self->flush();
-}
+# When the object goes out of scope and flush it's contents so that they get
+# saved back into the session.
+sub DESTROY { shift->flush(); }
 
 
 # Accessors
 #------------------------------------------------------------------------------
 
+# Returns boolean for whether cleanup has been performed.
+sub cleanup_done { shift->{_cleanup_done} }
+
 # Return the associated session object.
 sub session { shift->{_session} }
-
-# Returns boolean for whether auto cleanup is enabled.
-sub auto_cleanup { shift->{_auto_cleanup} }
 
 # A list of the session keys.  This returns an array ref, the first is the
 # flash data, the second is the keys to keep.
@@ -180,8 +170,9 @@ sub reset
 {
     my $self = shift;
 
-    $self->{_data} = { };
-    $self->{_keep} = { };
+    $self->{_data}         = { };
+    $self->{_keep}         = { };
+    $self->{_cleanup_done} = 0;
 
     return 1;
 }
@@ -226,10 +217,17 @@ sub discard
 
 # Cleanup the flash.  All keys not marked as kept will be deleted, otherwise
 # they are marked for discard next time this method is called.  This method
-# is automatically called by the cgiapp teardown callback.
+# is automatically called during flush().
+#
+# Cleanup process is tracked, and it will not be performed more than once unless
+# you pass a true value to signify that you want to force the cleanup.
 sub cleanup
 {
     my $self = shift;
+    my $force = shift;
+
+    # Skip cleanup since it has already been performed.
+    return 1 if ($self->cleanup_done && !$force);
 
     foreach my $key (CORE::keys %{ $self->{_data} })
     {
@@ -243,14 +241,20 @@ sub cleanup
         }
     }
 
+    # Set flag
+    $self->{_cleanup_done}++;
+
     return 1;
 }
 
-# Save the contents of the flash back to the session.
-sub flush
+# Perform cleanup and save the contents of the flash back to the session.
+sub flush 
 {
     my $self        = shift;
     my $session_key = $self->session_key;
+
+    # Perform cleanup
+    $self->cleanup();
 
     # Save the data back into the session
     $self->session->param($session_key => $self->contents);
@@ -277,7 +281,7 @@ __END__
 
 =head1 NAME
 
-CGI::Session::Flash - The great new CGI::Session::Flash!
+CGI::Session::Flash - Session Flash Object
 
 =head1 SYNOPSIS
 
@@ -285,17 +289,11 @@ CGI::Session::Flash - The great new CGI::Session::Flash!
     use CGI::Session::Flash;
 
     my $session = CGI::Session->new(...);
-    my $flash   = CGI::Session::Flash->new($session);
+    my $flash   = CGI::Session::Flash->new($session, \%options);
 
     # Get and set the values
     $flash->set(KEY => @VALUES);
     my @values = $flash->get('KEY');
-
-    # Mark a key as something to keep for another request.
-    $flash->keep('KEY');
-
-    # Mark a key to be discarded at the end of the request.
-    $flash->discard('KEY');
 
     # Checking for keys and if the flash is empty.
     print "Flash is empty\n"     if ($flash->is_empty);
@@ -314,8 +312,17 @@ This module implements a Flash object.  A flash is session data with a
 specific life cycle.  When you put something into the flash it stays there
 until two C<cleanup> calls have been made.  What this generally means is
 that in a web application the data in the flash will stay until the end
-of the next request.  This allows you to use it for storing messages that
+of the next request (the first cleanup call is made at the end of the first
+request).  This allows you to use it for storing messages that
 can be accessed after a redirect, but then are automatically cleaned up.
+
+Textual messages are not the only data that can be stored in the flash though.
+You can use it to store anything that can be properly serialized into the
+session.  Another example use for it is to store previous form arguments for
+when redirecting back to a form after an error occurred.
+
+The advantage of using the flash instead of the session directly is that you
+do not need to worry about cleaning up after yourself.
 
 =head1 METHODS
 
@@ -332,14 +339,6 @@ Additional arguments specify options for the flash.  The possible options are
 
 =over 4
 
-=item auto_cleanup
-
-Set to a true or false value depending on whether you want to enable automatic
-cleanup.  The default is true.
-
-If enabled a call to C<cleanup> will be invoked when the object goes out of
-scope.
-
 =item session_key
 
 This is the name of the key to use when storing the flash data in the session.
@@ -354,13 +353,14 @@ and the list of flash keys to keep is stored in a key with C<_keep> appended.
 
 =over 4
 
+=item $flash->cleanup_done
+
+Returns true or false, depending on whether the cleanup process has been
+performed already.
+
 =item $flash->session
 
 Returns the associated session object.
-
-=item $flash->auto_cleanup
-
-Returns true or false, depending on whether auto cleanup is enabled.
 
 =item $flash->session_key
 
@@ -437,8 +437,8 @@ Reset the flash.  This wipes all data and kept keys.
 
 =head2 Cleanup
 
-When an object goes out of scope the C<cleanup> and C<flush> methods are
-automatically called. 
+When an object goes out of scope the C<flush> method is automatically called. 
+This will perform a C<cleanup> if it has not already been done.
 
 =over 4
 
@@ -448,24 +448,32 @@ Mark the specified keys as being kept.  If no keys are specified then all
 keys currently in the flash will be kept.  See C<cleanup> for details on how
 this works.
 
+Call this method if you know you want to keep everything for an additional
+life cycle.
+
 =item $flash->discard(@keys)
 
 Mark the specified keys as being discarded.  If no keys are specified then all
 keys currently in the flash will be marked as being discarded.  Once marked as
 discarded they will be removed the next time that C<cleanup> is called.
 
-=item $flash->cleanup()
+=item $flash->cleanup($force)
 
 Perform cleanup of the flash.
 
 This method goes through all of the keys in the flash.  If the key is not
 marked as being kept it is removed.  If it is marked as being kept then it is
 not removed, but it is instead marked as being discarded for the next time that
-the method is called.
+the method is called.  Generally this method is not directly called, but
+instead automatically called during C<flush>.
+
+The cleanup process is tracked so that it will not run more than once unless
+you pass a true value to specify force.
 
 =item $flash->flush()
 
-Save the contents of the flash back into the session.
+Perform C<cleanup> then save the contents of the flash back into the session.
+This is automatically called when the flash object is destroyed.
 
 =back
 
@@ -480,11 +488,25 @@ flash.  This is useful for debugging purposes.
 
 =back
 
+=head1 CAVEATS
+
+The C<flush> method is automatically called when the object is destroyed.
+However, there can be times when an object may not get properly destroyed
+such as in the event of a circular reference.  Because of this, you may want
+to explicitly call C<flush> in your cleanup code.
+
 =head1 BUGS
 
 Please report any bugs or feature requests to C<bug-cgi-session-flash at rt.cpan.org>, or through
 the web interface at L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=CGI-Session-Flash>.  I will be notified, and then you'll
 automatically be notified of progress on your bug as I make changes.
+
+=head1 ALTERNATIVES
+
+The flash object is useful for passing data around between requests, but it
+is not always needed.  Sometimes a simpler approach is better such as
+redirecting with a query parameter such as C<is_success=1> and then checking
+for that in your code.  This is particularly useful when not using sessions.
 
 =head1 ACKNOWLEDGEMENTS
 

@@ -1,7 +1,7 @@
 --- #YAML:1.0
 name:                CGI-Session-Flash
-version:             0.01
-abstract:            The great new CGI::Session::Flash!
+version:             0.02
+abstract:            Session Flash Object
 license:             ~
 author:              
     - Bradley C Bailey <cgi-session-flash@brad.memoryleak.org>
